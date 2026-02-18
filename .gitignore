@@ -3,9 +3,12 @@
 .env
 .vscode/
 
+# --- Logs & Test Artifacts ---
+*.log
+test_logs/
+
 # --- Go (Gateway) ---
 gateway/*.exe
-gateway/*.log
 gateway/bin/
 
 # --- Python (Backend - Future) ---

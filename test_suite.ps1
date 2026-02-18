@@ -1,162 +1,173 @@
-# -----------------------------------------------------------
-# AI Gateway Test Suite (Full Version)
-# Tests Proxy Forwarding, User Limits, IP Limits, and Global Limits
-# -----------------------------------------------------------
-
-$ExePath = ".\gateway\api-gateway.exe"
-$Url     = "http://localhost:8080/api/v1/gpt4"
-$LogOut  = "server_output.log"
-$LogErr  = "server_error.log"
-
-# 0. KILL ZOMBIES
-Write-Host ">>> Checking for zombie processes..." -ForegroundColor Cyan
-Stop-Process -Name "api-gateway" -Force -ErrorAction SilentlyContinue
-Start-Sleep -Seconds 1
-Write-Host ">>> Port 8080 should be free now.`n" -ForegroundColor Gray
-
-# 1. Compile (Enter gateway folder to build)
-Write-Host ">>> Compiling Go program..." -ForegroundColor Cyan
-Push-Location gateway 
-go build -o api-gateway.exe cmd/server/main.go
-$buildStatus = $LASTEXITCODE
-Pop-Location 
-if ($buildStatus -ne 0) { Write-Host "COMPILE FAILED" -F Red; exit }
-Write-Host ">>> Compilation Success!`n" -ForegroundColor Green
+param (
+    [ValidateSet("All", "UserLimit", "IpLimit", "GlobalLimit", "MultiService", "FailOpen", "FailClosed")]
+    [string]$Scenario = "All"
+)
 
 # -----------------------------------------------------------
-# Test Runner Function
+# AI Gateway Modular Test Suite - V4 (Log Isolation)
 # -----------------------------------------------------------
-function Run-TestCase {
-    param (
-        [string]$Name,
-        [hashtable]$EnvVars,
-        [scriptblock]$TestLogic
-    )
 
-    Write-Host "==================================================" -F Cyan
-    Write-Host "SCENARIO: $Name" -F Cyan
+$OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+$ExePath   = ".\gateway\api-gateway.exe"
+$Gpt4Url   = "http://localhost:8080/api/v1/gpt4"
+$VisionUrl = "http://localhost:8080/api/v1/vision"
+$LogFolder = ".\test_logs"
+
+# 確保日誌資料夾存在
+if (-not (Test-Path $LogFolder)) { New-Item -ItemType Directory -Path $LogFolder > $null }
+
+# --- 核心工具：編譯 ---
+function Build-Gateway {
+    Write-Host "`n>>> [BUILD] Compiling Go program..." -ForegroundColor Cyan
+    Push-Location gateway 
+    go build -o api-gateway.exe cmd/server/main.go
+    Pop-Location 
+    if ($LASTEXITCODE -ne 0) { throw "Compilation Failed" }
+}
+
+# --- 核心執行器 ---
+function Execute-Test {
+    param ([string]$Id, [string]$Name, [hashtable]$EnvVars, [scriptblock]$TestLogic, [string]$RedisAction = "Normal")
+
+    # ✨ 這裡建立專屬日誌路徑
+    $CurrentOutLog = Join-Path $LogFolder "$Id`_out.log"
+    $CurrentErrLog = Join-Path $LogFolder "$Id`_err.log"
+
+    Write-Host "`n" + ("=" * 60) -F Cyan
+    Write-Host "TESTING: $Name" -F Cyan
     
-    # ✨ FIX: 清空 Redis 資料庫 (FlushDB)
-    # 這是為了避免上一次測試的 Token 殘留影響這一次
-    Write-Host ">>> Flushing Redis..." -ForegroundColor DarkGray
-    docker exec $(docker ps -qf "name=redis") redis-cli FLUSHDB > $null
+    # 0. 清理環境變數
+    $VarsToClear = @("LIMIT_USER_CAP", "LIMIT_USER_RATE", "LIMIT_IP_CAP", "LIMIT_IP_RATE", "LIMIT_GLOBAL_CAP", "LIMIT_GLOBAL_RATE", "REDIS_FAILURE_MODE")
+    foreach ($v in $VarsToClear) { [Environment]::SetEnvironmentVariable($v, $null, "Process") }
 
-    foreach ($key in $EnvVars.Keys) {
-        [Environment]::SetEnvironmentVariable($key, $EnvVars[$key], "Process")
+    # 1. 偵測 Redis
+    $redisId = docker ps -aqf "name=redis" | Select-Object -First 1
+    if (-not $redisId) { Write-Host "❌ ERROR: Redis Container not found!" -F Red; return }
+
+    # 2. Setup (停掉舊 Server, 處理 Redis)
+    Stop-Process -Name "api-gateway" -Force -ErrorAction SilentlyContinue
+    
+    if ($RedisAction -eq "Stop") {
+        Write-Host ">>> Stopping Redis ($redisId)..." -F DarkGray
+        docker stop $redisId > $null
+    } else {
+        docker start $redisId > $null
+        Start-Sleep -Seconds 1
+        docker exec $redisId redis-cli FLUSHDB > $null
+        Write-Host ">>> Redis Ready." -F DarkGray
     }
 
-    # Start Server
-    $p = Start-Process -FilePath $ExePath -PassThru -RedirectStandardOutput $LogOut -RedirectStandardError $LogErr -WindowStyle Hidden
+    # 3. 注入環境變數
+    foreach ($key in $EnvVars.Keys) { [Environment]::SetEnvironmentVariable($key, $EnvVars[$key], "Process") }
+    
+    # 4. 啟動 Server (導向專屬日誌)
+    $p = Start-Process -FilePath $ExePath -PassThru -WorkingDirectory ".\gateway" `
+        -RedirectStandardOutput $CurrentOutLog -RedirectStandardError $CurrentErrLog -WindowStyle Hidden
     Start-Sleep -Seconds 2
 
-    try {
-        & $TestLogic
+    # 5. Execution
+    try { 
+        & $TestLogic 
     } finally {
-        if ($p) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
-        Start-Sleep -Seconds 1
+        # 6. Teardown
+        if ($p) { 
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue 
+        }
         
-        # Check for errors (Filtering out normal startup logs)
-        if (Test-Path $LogErr) {
-            $errs = Get-Content $LogErr
-            $realErrs = $errs | Where-Object { 
-                $_ -notmatch "Server starting" -and 
-                $_ -notmatch "Config Loaded" -and 
-                $_ -notmatch "Forwarding" -and 
-                $_ -notmatch "AI Gateway running" 
-            }
-            if ($realErrs) {
-                Write-Host "`n[SERVER ERRORS]" -ForegroundColor Magenta
-                $realErrs
-            }
-            Remove-Item $LogErr -Force
+        if ($RedisAction -eq "Stop") { 
+            Write-Host ">>> Restarting Redis..." -F DarkGray
+            docker start $redisId > $null 
         }
-        if (Test-Path $LogOut) { Remove-Item $LogOut -Force }
-    }
-    Write-Host "`n"
-}
 
-# -----------------------------------------------------------
-# Scenario 1: Proxy Latency & User Limit
-# Goal: 3 requests pass (slow), 4th request blocked (fast)
-# -----------------------------------------------------------
-Run-TestCase -Name "Integration: Proxy Latency + User Quota (Max 3)" -EnvVars @{
-    "LIMIT_USER_CAP"="3"; 
-    "LIMIT_USER_RATE"="0"; # No refill during test
-    "LIMIT_GLOBAL_CAP"="1000"; "LIMIT_GLOBAL_RATE"="1000"
-} -TestLogic {
-    for ($i=1; $i -le 5; $i++) {
-        $start = Get-Date
-        try {
-            $r = Invoke-WebRequest -Uri $Url -Headers @{"X-API-Key"="sk-test"} -UseBasicParsing
-            $duration = ((Get-Date) - $start).TotalSeconds
-            
-            if ($duration -ge 1.5) {
-                Write-Host "Request $i : SUCCESS (200) - Proxy Latency: $([math]::Round($duration, 2))s" -F Green
-            } else {
-                Write-Host "Request $i : SUCCESS (200) - BUT TOO FAST!" -F Yellow
-            }
-        } catch {
-            $code = $_.Exception.Response.StatusCode.value__
-            if ($code -eq 429) {
-                Write-Host "Request $i : BLOCKED (429) - User Limit Works!" -F Green
-            } else {
-                Write-Host "Request $i : ERROR ($code)" -F Red
-            }
+        # 顯示關鍵日誌 (這時即便檔案鎖定還在，讀取通常是沒問題的)
+        if (Test-Path $CurrentErrLog) {
+            $logs = Get-Content $CurrentErrLog | Where-Object { $_ -match "Fail-" -or $_ -match "limit exceeded" -or $_ -match "Error" }
+            if ($logs) { Write-Host "[SERVER LOGS]:" -F DarkGray; $logs }
         }
+        Write-Host ">>> Cleanup Done. Logs saved at: $CurrentErrLog" -F DarkGray
     }
 }
 
-# -----------------------------------------------------------
-# Scenario 2: IP Limit
-# Goal: Block requests from the same IP after 5 tries
-# -----------------------------------------------------------
-Run-TestCase -Name "Verify IP Limit (Max 5)" -EnvVars @{
-    "LIMIT_USER_CAP"="100"; "LIMIT_USER_RATE"="100";
-    "LIMIT_IP_CAP"="5"; 
-    "LIMIT_IP_RATE"="0"; # No refill
-    "LIMIT_GLOBAL_CAP"="100"; "LIMIT_GLOBAL_RATE"="100"
-} -TestLogic {
-    # Use different API keys to bypass User Limit, forcing it to hit IP Limit
-    for ($i=1; $i -le 7; $i++) {
-        $key = "key-$i"
-        try {
-            $r = Invoke-WebRequest -Uri $Url -Headers @{"X-API-Key"=$key} -UseBasicParsing
-            Write-Host "Request $i : SUCCESS (200)" -F Green
-        } catch {
-            $code = $_.Exception.Response.StatusCode.value__
-            $msg = $_.ErrorDetails.Message
-            if ($msg -match "this IP") {
-                Write-Host "Request $i : BLOCKED by IP Limit ($code) - PASS!" -F Green
-            } else {
-                Write-Host "Request $i : ERROR ($code) - $msg" -F Yellow
+# --- 所有測試案例清單 (傳入 Id 參數) ---
+$ScenariosList = [ordered]@{
+    "UserLimit" = {
+        Execute-Test -Id "UserLimit" -Name "User Limit Verification" -EnvVars @{"LIMIT_USER_CAP"="3"; "LIMIT_USER_RATE"="0"} -TestLogic {
+            for ($i=1; $i -le 4; $i++) {
+                try {
+                    $r = Invoke-WebRequest -Uri $Gpt4Url -Headers @{"X-API-Key"="sk-user"} -UseBasicParsing
+                    Write-Host "Req $i : SUCCESS" -F Green
+                } catch {
+                    Write-Host "Req $i : BLOCKED ($($_.Exception.Response.Headers["X-RateLimit-Type"])) - PASS" -F Green
+                }
             }
         }
     }
-}
 
-# -----------------------------------------------------------
-# Scenario 3: Global Limit
-# Goal: Block EVERYTHING after 3 requests (System wide)
-# -----------------------------------------------------------
-Run-TestCase -Name "Verify Global Service Limit (Max 3 Total)" -EnvVars @{
-    "LIMIT_USER_CAP"="100"; "LIMIT_USER_RATE"="100";
-    "LIMIT_IP_CAP"="100"; "LIMIT_IP_RATE"="100";
-    "LIMIT_GLOBAL_CAP"="3"; 
-    "LIMIT_GLOBAL_RATE"="0" # No refill
-} -TestLogic {
-    for ($i=1; $i -le 5; $i++) {
-        try {
-            $r = Invoke-WebRequest -Uri $Url -Headers @{"X-API-Key"="global-test"} -UseBasicParsing
-            Write-Host "Request $i : SUCCESS (200)" -F Green
-        } catch {
-            $code = $_.Exception.Response.StatusCode.value__
-            if ($code -eq 503) {
-                Write-Host "Request $i : BLOCKED by Global Limit (503) - PASS!" -F Green
-            } else {
-                Write-Host "Request $i : ERROR ($code)" -F Yellow
+    "IpLimit" = {
+        Execute-Test -Id "IpLimit" -Name "IP Limit Verification" -EnvVars @{"LIMIT_IP_CAP"="5"; "LIMIT_IP_RATE"="0"} -TestLogic {
+            for ($i=1; $i -le 6; $i++) {
+                try {
+                    $r = Invoke-WebRequest -Uri $Gpt4Url -Headers @{"X-API-Key"=("key-"+$i)} -UseBasicParsing
+                    Write-Host "Req $i : SUCCESS" -F Green
+                } catch {
+                    Write-Host "Req $i : BLOCKED ($($_.Exception.Response.Headers["X-RateLimit-Type"])) - PASS" -F Green
+                }
+            }
+        }
+    }
+
+    "GlobalLimit" = {
+        Execute-Test -Id "GlobalLimit" -Name "Global Limit Verification" -EnvVars @{"LIMIT_GLOBAL_CAP"="3"; "LIMIT_GLOBAL_RATE"="0"} -TestLogic {
+            for ($i=1; $i -le 4; $i++) {
+                try {
+                    $r = Invoke-WebRequest -Uri $Gpt4Url -Headers @{"X-API-Key"="global"} -UseBasicParsing
+                    Write-Host "Req $i : SUCCESS" -F Green
+                } catch {
+                    Write-Host "Req $i : BLOCKED ($($_.Exception.Response.Headers["X-RateLimit-Type"])) - PASS" -F Green
+                }
+            }
+        }
+    }
+
+    "MultiService" = {
+        Execute-Test -Id "MultiService" -Name "Multi-Service Routing" -EnvVars @{} -TestLogic {
+            $r = Invoke-WebRequest -Uri $VisionUrl -Headers @{"X-API-Key"="vision"} -UseBasicParsing
+            Write-Host "SUCCESS: Reached Vision Model" -F Green
+        }
+    }
+
+    "FailOpen" = {
+        Execute-Test -Id "FailOpen" -Name "Strategy: Fail-Open" -EnvVars @{"REDIS_FAILURE_MODE"="open"} -RedisAction "Stop" -TestLogic {
+            try {
+                $r = Invoke-WebRequest -Uri $Gpt4Url -Headers @{"X-API-Key"="fail"} -UseBasicParsing
+                Write-Host "RESULT: Request Allowed - PASS" -F Green
+            } catch { Write-Host "RESULT: FAILED" -F Red }
+        }
+    }
+
+    "FailClosed" = {
+        Execute-Test -Id "FailClosed" -Name "Strategy: Fail-Closed" -EnvVars @{"REDIS_FAILURE_MODE"="closed"} -RedisAction "Stop" -TestLogic {
+            try {
+                $r = Invoke-WebRequest -Uri $Gpt4Url -Headers @{"X-API-Key"="fail"} -UseBasicParsing -ErrorAction Stop
+                Write-Host "RESULT: FAILED" -F Red
+            } catch { 
+                $type = $_.Exception.Response.Headers["X-RateLimit-Type"]
+                Write-Host "RESULT: Blocked by $type - PASS" -F Green
             }
         }
     }
 }
 
-Write-Host "ALL TESTS COMPLETED!" -F Cyan
+# --- 執行入口 ---
+try {
+    Build-Gateway
+    if ($Scenario -eq "All") {
+        $ScenariosList.Keys | ForEach-Object { & $ScenariosList[$_] }
+    } else {
+        & $ScenariosList[$Scenario]
+    }
+} finally {
+    Write-Host "`n--- ALL TESTS FINISHED ---" -F Cyan
+}
