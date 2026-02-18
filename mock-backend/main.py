@@ -1,35 +1,51 @@
 from fastapi import FastAPI, Request
-import time
 import asyncio
 import os
 
 app = FastAPI()
 
-# 模擬環境變數 (服務名稱)
+# Simulated Environment Variable
 SERVICE_NAME = os.getenv("SERVICE_NAME", "Mock-AI-Service")
 
 @app.get("/")
 async def root():
     return {"message": f"Hello from {SERVICE_NAME}"}
 
-@app.get("/api/v1/gpt4")
-async def mock_gpt4():
-    """模擬一個很慢的大語言模型 (LLM)"""
-    print(f"[{SERVICE_NAME}] 收到 GPT-4 請求... 開始思考...")
-    # 模擬 GPU 運算延遲 (2秒)
-    await asyncio.sleep(2)
+@app.api_route("/api/v1/gpt4", methods=["GET", "POST"])
+async def mock_gpt4(request: Request):
+    """Simulates a slow LLM (Supports POST for tests, GET for browser)"""
+    
+    if request.method == "POST":
+        try:
+            body = await request.json()
+            print(f"[{SERVICE_NAME}] Received GPT-4 POST Request: {body}")
+        except:
+            print(f"[{SERVICE_NAME}] Received GPT-4 POST Request (Empty Body)")
+    else:
+        print(f"[{SERVICE_NAME}] Received GPT-4 GET Request")
+
+    # Simulate Latency (0.1s is enough for testing)
+    await asyncio.sleep(0.1) 
+    
     return {
         "model": "gpt-4-turbo",
-        "response": "這是一個模擬的 AI 回應。我思考了 2 秒鐘才產生這句話。",
-        "usage": {"prompt_tokens": 10, "completion_tokens": 20}
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "This is a mock response from the Docker container."
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30}
     }
 
-@app.get("/api/v1/vision")
-async def mock_vision():
-    """模擬一個較快的影像辨識模型"""
-    print(f"[{SERVICE_NAME}] 收到圖片辨識請求...")
-    # 模擬較快的運算 (0.5秒)
-    await asyncio.sleep(0.5)
+@app.api_route("/api/v1/vision", methods=["GET", "POST"])
+async def mock_vision(request: Request):
+    """Simulates a faster Vision Model"""
+    print(f"[{SERVICE_NAME}] Received Vision Request...")
+    
+    await asyncio.sleep(0.1)
+    
     return {
         "model": "resnet-50",
         "tags": ["cat", "animal", "cute"],
@@ -38,5 +54,5 @@ async def mock_vision():
 
 if __name__ == "__main__":
     import uvicorn
-    # 監聽 0.0.0.0 讓 Docker 外部可以連線
+    # Listen on 0.0.0.0 to allow access from outside Docker
     uvicorn.run(app, host="0.0.0.0", port=5001)

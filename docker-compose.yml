@@ -13,18 +13,17 @@ services:
     networks:
       - gateway-net
 
-  # 2. Mock Backend (新增這個!)
+  # 2. Mock Backend
   mock-backend:
-    build: ./mock-backend       # 指向我們剛剛建的資料夾
-    container_name: ai-mock-backend
+    build: ./mock-backend       # Points to the folder containing main.py and Dockerfile
+    container_name: ai-gateway-mock
     ports:
-      - "5001:5001"             # 讓本機可以透過 localhost:5001 測試它
+      - "5001:5001"             # Maps localhost:5001 to container:5001
     environment:
-      - SERVICE_NAME=Python-AI-Model
+      - SERVICE_NAME=Mock-GPT-4
     networks:
       - gateway-net
-
-  # (Gateway 暫時還不需要 Docker 化，我們先在本機跑 Go)
+    restart: always
 
 volumes:
   redis_data:

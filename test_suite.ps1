@@ -4,7 +4,7 @@ param (
 )
 
 # -----------------------------------------------------------
-# AI Gateway Modular Test Suite - V4 (Log Isolation)
+# AI Gateway Modular Test Suite - V5 (POST Requests + Log Isolation)
 # -----------------------------------------------------------
 
 $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -15,10 +15,10 @@ $Gpt4Url   = "http://localhost:8080/api/v1/gpt4"
 $VisionUrl = "http://localhost:8080/api/v1/vision"
 $LogFolder = ".\test_logs"
 
-# 確保日誌資料夾存在
+# Ensure log folder exists
 if (-not (Test-Path $LogFolder)) { New-Item -ItemType Directory -Path $LogFolder > $null }
 
-# --- 核心工具：編譯 ---
+# --- Core Tool: Compiler ---
 function Build-Gateway {
     Write-Host "`n>>> [BUILD] Compiling Go program..." -ForegroundColor Cyan
     Push-Location gateway 
@@ -27,26 +27,26 @@ function Build-Gateway {
     if ($LASTEXITCODE -ne 0) { throw "Compilation Failed" }
 }
 
-# --- 核心執行器 ---
+# --- Core Executor ---
 function Execute-Test {
     param ([string]$Id, [string]$Name, [hashtable]$EnvVars, [scriptblock]$TestLogic, [string]$RedisAction = "Normal")
 
-    # ✨ 這裡建立專屬日誌路徑
+    # Create unique log paths for this scenario
     $CurrentOutLog = Join-Path $LogFolder "$Id`_out.log"
     $CurrentErrLog = Join-Path $LogFolder "$Id`_err.log"
 
     Write-Host "`n" + ("=" * 60) -F Cyan
     Write-Host "TESTING: $Name" -F Cyan
     
-    # 0. 清理環境變數
+    # 0. Clear Environment Variables
     $VarsToClear = @("LIMIT_USER_CAP", "LIMIT_USER_RATE", "LIMIT_IP_CAP", "LIMIT_IP_RATE", "LIMIT_GLOBAL_CAP", "LIMIT_GLOBAL_RATE", "REDIS_FAILURE_MODE")
     foreach ($v in $VarsToClear) { [Environment]::SetEnvironmentVariable($v, $null, "Process") }
 
-    # 1. 偵測 Redis
+    # 1. Detect Redis
     $redisId = docker ps -aqf "name=redis" | Select-Object -First 1
     if (-not $redisId) { Write-Host "❌ ERROR: Redis Container not found!" -F Red; return }
 
-    # 2. Setup (停掉舊 Server, 處理 Redis)
+    # 2. Setup (Stop old Server, Handle Redis)
     Stop-Process -Name "api-gateway" -Force -ErrorAction SilentlyContinue
     
     if ($RedisAction -eq "Stop") {
@@ -59,10 +59,10 @@ function Execute-Test {
         Write-Host ">>> Redis Ready." -F DarkGray
     }
 
-    # 3. 注入環境變數
+    # 3. Inject Environment Variables
     foreach ($key in $EnvVars.Keys) { [Environment]::SetEnvironmentVariable($key, $EnvVars[$key], "Process") }
     
-    # 4. 啟動 Server (導向專屬日誌)
+    # 4. Start Server (Redirect to isolated logs)
     $p = Start-Process -FilePath $ExePath -PassThru -WorkingDirectory ".\gateway" `
         -RedirectStandardOutput $CurrentOutLog -RedirectStandardError $CurrentErrLog -WindowStyle Hidden
     Start-Sleep -Seconds 2
@@ -81,7 +81,7 @@ function Execute-Test {
             docker start $redisId > $null 
         }
 
-        # 顯示關鍵日誌 (這時即便檔案鎖定還在，讀取通常是沒問題的)
+        # Show critical logs
         if (Test-Path $CurrentErrLog) {
             $logs = Get-Content $CurrentErrLog | Where-Object { $_ -match "Fail-" -or $_ -match "limit exceeded" -or $_ -match "Error" }
             if ($logs) { Write-Host "[SERVER LOGS]:" -F DarkGray; $logs }
@@ -90,13 +90,13 @@ function Execute-Test {
     }
 }
 
-# --- 所有測試案例清單 (傳入 Id 參數) ---
+# --- Test Scenarios (Using POST requests now) ---
 $ScenariosList = [ordered]@{
     "UserLimit" = {
         Execute-Test -Id "UserLimit" -Name "User Limit Verification" -EnvVars @{"LIMIT_USER_CAP"="3"; "LIMIT_USER_RATE"="0"} -TestLogic {
             for ($i=1; $i -le 4; $i++) {
                 try {
-                    $r = Invoke-WebRequest -Uri $Gpt4Url -Headers @{"X-API-Key"="sk-user"} -UseBasicParsing
+                    $r = Invoke-WebRequest -Uri $Gpt4Url -Method Post -Body "{}" -ContentType "application/json" -Headers @{"X-API-Key"="sk-user"} -UseBasicParsing
                     Write-Host "Req $i : SUCCESS" -F Green
                 } catch {
                     Write-Host "Req $i : BLOCKED ($($_.Exception.Response.Headers["X-RateLimit-Type"])) - PASS" -F Green
@@ -109,7 +109,7 @@ $ScenariosList = [ordered]@{
         Execute-Test -Id "IpLimit" -Name "IP Limit Verification" -EnvVars @{"LIMIT_IP_CAP"="5"; "LIMIT_IP_RATE"="0"} -TestLogic {
             for ($i=1; $i -le 6; $i++) {
                 try {
-                    $r = Invoke-WebRequest -Uri $Gpt4Url -Headers @{"X-API-Key"=("key-"+$i)} -UseBasicParsing
+                    $r = Invoke-WebRequest -Uri $Gpt4Url -Method Post -Body "{}" -ContentType "application/json" -Headers @{"X-API-Key"=("key-"+$i)} -UseBasicParsing
                     Write-Host "Req $i : SUCCESS" -F Green
                 } catch {
                     Write-Host "Req $i : BLOCKED ($($_.Exception.Response.Headers["X-RateLimit-Type"])) - PASS" -F Green
@@ -122,7 +122,7 @@ $ScenariosList = [ordered]@{
         Execute-Test -Id "GlobalLimit" -Name "Global Limit Verification" -EnvVars @{"LIMIT_GLOBAL_CAP"="3"; "LIMIT_GLOBAL_RATE"="0"} -TestLogic {
             for ($i=1; $i -le 4; $i++) {
                 try {
-                    $r = Invoke-WebRequest -Uri $Gpt4Url -Headers @{"X-API-Key"="global"} -UseBasicParsing
+                    $r = Invoke-WebRequest -Uri $Gpt4Url -Method Post -Body "{}" -ContentType "application/json" -Headers @{"X-API-Key"="global"} -UseBasicParsing
                     Write-Host "Req $i : SUCCESS" -F Green
                 } catch {
                     Write-Host "Req $i : BLOCKED ($($_.Exception.Response.Headers["X-RateLimit-Type"])) - PASS" -F Green
@@ -133,7 +133,7 @@ $ScenariosList = [ordered]@{
 
     "MultiService" = {
         Execute-Test -Id "MultiService" -Name "Multi-Service Routing" -EnvVars @{} -TestLogic {
-            $r = Invoke-WebRequest -Uri $VisionUrl -Headers @{"X-API-Key"="vision"} -UseBasicParsing
+            $r = Invoke-WebRequest -Uri $VisionUrl -Method Post -Body "{}" -ContentType "application/json" -Headers @{"X-API-Key"="vision"} -UseBasicParsing
             Write-Host "SUCCESS: Reached Vision Model" -F Green
         }
     }
@@ -141,7 +141,7 @@ $ScenariosList = [ordered]@{
     "FailOpen" = {
         Execute-Test -Id "FailOpen" -Name "Strategy: Fail-Open" -EnvVars @{"REDIS_FAILURE_MODE"="open"} -RedisAction "Stop" -TestLogic {
             try {
-                $r = Invoke-WebRequest -Uri $Gpt4Url -Headers @{"X-API-Key"="fail"} -UseBasicParsing
+                $r = Invoke-WebRequest -Uri $Gpt4Url -Method Post -Body "{}" -ContentType "application/json" -Headers @{"X-API-Key"="fail"} -UseBasicParsing
                 Write-Host "RESULT: Request Allowed - PASS" -F Green
             } catch { Write-Host "RESULT: FAILED" -F Red }
         }
@@ -150,7 +150,7 @@ $ScenariosList = [ordered]@{
     "FailClosed" = {
         Execute-Test -Id "FailClosed" -Name "Strategy: Fail-Closed" -EnvVars @{"REDIS_FAILURE_MODE"="closed"} -RedisAction "Stop" -TestLogic {
             try {
-                $r = Invoke-WebRequest -Uri $Gpt4Url -Headers @{"X-API-Key"="fail"} -UseBasicParsing -ErrorAction Stop
+                $r = Invoke-WebRequest -Uri $Gpt4Url -Method Post -Body "{}" -ContentType "application/json" -Headers @{"X-API-Key"="fail"} -UseBasicParsing -ErrorAction Stop
                 Write-Host "RESULT: FAILED" -F Red
             } catch { 
                 $type = $_.Exception.Response.Headers["X-RateLimit-Type"]
@@ -160,7 +160,7 @@ $ScenariosList = [ordered]@{
     }
 }
 
-# --- 執行入口 ---
+# --- Execution Entry Point ---
 try {
     Build-Gateway
     if ($Scenario -eq "All") {

@@ -1,0 +1,31 @@
+server:
+  port: 8080
+  mode: "development"
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  failure_mode: "open" # 故障時放行
+
+services:
+  - name: "gpt4-service"
+    path: "/api/v1/gpt4"
+    target_url: "http://localhost:5001"
+    rate_limit:
+      global_rate: 1000.0
+      global_capacity: 1000.0
+      ip_rate: 100.0
+      ip_capacity: 100.0
+      user_rate: 0.0      # 測試用，設為 0 禁止回血
+      user_capacity: 3.0  # 測試用，容量 3
+
+  - name: "vision-service"
+    path: "/api/v1/vision"
+    target_url: "http://localhost:5001" # 目前先指向同一個 mock backend
+    rate_limit:
+      global_rate: 1000.0
+      global_capacity: 1000.0
+      ip_rate: 10.0
+      ip_capacity: 10.0
+      user_rate: 1.0
+      user_capacity: 10.0
