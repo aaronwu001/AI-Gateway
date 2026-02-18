@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  # ----------------------------------------------------------------
+  # 1. Redis (共用資料庫)
+  # ----------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: ai-gateway-redis
+    ports:
+      - "6379:6379"  # 讓本機 Go 程式可以連到 localhost:6379
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    networks:
+      - gateway-net
+
+  # ----------------------------------------------------------------
+  # 2. Go API Gateway (你的 Go 程式)
+  # 目前你還是在本機跑 (go run)，所以這裡先註解起來。
+  # 等未來我們把 Go 也打包成 Docker Image 時，就會打開這段。
+  # ----------------------------------------------------------------
+  # gateway:
+  #   build: ./gateway    # <--- 注意這裡！指向 gateway 資料夾
+  #   container_name: ai-gateway-service
+  #   ports:
+  #     - "8080:8080"
+  #   environment:
+  #     - REDIS_ADDR=redis:6379 # 在 Docker 內要用 Service Name 連線
+  #   depends_on:
+  #     - redis
+  #   networks:
+  #     - gateway-net
+
+  # ----------------------------------------------------------------
+  # 3. Python Mock Backend (Phase 4 即將加入)
+  # 這就是我們接下來要寫的「假 AI 模型」
+  # ----------------------------------------------------------------
+  # mock-backend:
+  #   build: ./mock-backend
+  #   container_name: ai-mock-backend
+  #   ports:
+  #     - "5001:5001"
+  #   networks:
+  #     - gateway-net
+
+volumes:
+  redis_data:
+
+networks:
+  gateway-net:

@@ -1,0 +1,14 @@
+# --- Global ---
+.DS_Store
+.env
+.vscode/
+
+# --- Go (Gateway) ---
+gateway/*.exe
+gateway/*.log
+gateway/bin/
+
+# --- Python (Backend - Future) ---
+__pycache__/
+*.pyc
+venv/
