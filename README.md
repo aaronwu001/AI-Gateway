@@ -1,42 +1,52 @@
+# Go AI Gateway (Resilient Reverse Proxy Edition)
 
-# Go AI Gateway (Rate Limiter Edition)
-
-![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)
-![Redis](https://img.shields.io/badge/Redis-7.0+-DC382D?style=flat&logo=redis)
-![License](https://img.shields.io/badge/License-MIT-blue.svg)
-
-A high-performance, distributed API Gateway prototype designed to protect AI model deployments. It features a robust **3-layer rate limiting strategy** powered by Redis and Lua scripts to ensure atomic operations and prevent race conditions under high concurrency.
+A high-performance, distributed **AI Gateway** designed to protect and route traffic for LLM deployments. It combines a **Reverse Proxy** with a robust **3-layer rate limiting strategy**, ensuring atomic operations via Redis Lua scripts and system resilience through configurable failure modes.
 
 ## 🚀 Key Features
 
-* **🛡️ 3-Layer Defense Matrix**:
-    1.  **Global Service Limit**: Protects downstream infrastructure from total system collapse (Returns `503 Service Unavailable`).
-    2.  **IP-Based Limit**: Defends against DDoS attacks and bot abuse from specific sources (Returns `429 Too Many Requests`).
-    3.  **Identity-Based Limit**: Enforces business logic quotas via API Keys (Returns `429 Too Many Requests`).
-* **⚡ Atomic Operations**: Uses custom Lua scripts within Redis to guarantee race-condition-free counting and token bucket management.
-* **🧪 Automated Testing Suite**: Built-in PowerShell test runner that simulates multi-vector attacks to verify all protection layers.
-* **⚙️ Configurable**: Fully adjustable rate limits via Environment Variables.
+* **🛡️ 3-Layer Defense Matrix (Per Service)**:
+1. **Global Service Limit**: Protects specific downstream models (e.g., GPT-4) from infrastructure collapse (Returns `503 Service Unavailable`).
+2. **IP-Based Limit**: Defends against DDoS attacks and bot abuse (Returns `429 Too Many Requests`).
+3. **Identity-Based Limit**: Enforces business logic quotas via API Keys (Returns `429 Too Many Requests`).
+
+
+* **🔀 Multi-Service Reverse Proxy**: Dynamically routes traffic to different backend services (e.g., `/api/v1/gpt4`, `/api/v1/vision`) based on `config.yaml`.
+* **⚡ Atomic Operations**: Uses custom Lua scripts to prevent race conditions during high concurrency.
+* **🔌 Resilient Failure Strategies**: Configurable **Fail-Open** (allow traffic when Redis is down) or **Fail-Closed** (block traffic) modes.
+* **mag_right Observability**: Injects diagnostic headers (`X-RateLimit-Type`) to clarify why a request was blocked (Global vs. IP vs. User).
+* **🧪 Robust Automation**: Includes a modular PowerShell test suite with **log isolation** and environment cleanup.
 
 ## 🛠️ Architecture
 
-The system currently operates as a protective middleware layer utilizing a high-performance flow:
+The system operates as a smart middleware layer:
 
-`Client Request` -> `Go Gateway` -> `Redis (Atomic Check)` -> `[Allow] -> Backend / [Deny] -> 429 Error`
+`Client` -> `[Middleware: Rate Limit Check]` -> `[Redis]` -> `[Reverse Proxy]` -> `AI Service (Python/FastAPI)`
 
-*(Note: Currently, the backend is a Mock AI Service. Phase 4 will introduce Reverse Proxy capabilities to real Python/FastAPI backends.)*
+**Failure Handling:**
+
+* If Redis is **Online**: Enforces limits strictly.
+* If Redis is **Offline**:
+* *Mode: Open* -> Bypasses checks, allows traffic (Availability over Consistency).
+* *Mode: Closed* -> Blocks all traffic (Consistency over Availability).
+
+
 
 ## 📂 Project Structure
 
 ```text
 ai-gateway/              # Monorepo Root
-├── gateway/             # Go Application (The Rate Limiter)
-│   ├── cmd/server/      # Main entry point
-│   ├── internal/        # Core logic (Redis/Lua/Middleware)
+├── gateway/             # Go Application
+│   ├── cmd/server/      # Main entry point & Router
+│   ├── internal/
+│   │   ├── config/      # YAML Configuration Loader
+│   │   ├── limiter/     # Redis & Lua Logic
+│   │   └── server/      # Middleware & HTTP Handlers
+│   ├── config.yaml      # Service & Limit Configuration
 │   └── go.mod
 ├── mock-backend/        # Python Service (Mock AI Models)
-├── scripts/             # Utility scripts
-├── docker-compose.yml   # Infrastructure orchestration
-└── README.md            # Project documentation
+├── test_logs/           # Isolated logs from test runs (Gitignored)
+├── test_suite.ps1       # Modular Automated Testing Tool
+└── docker-compose.yml   # Redis Infrastructure
 
 ```
 
@@ -44,76 +54,97 @@ ai-gateway/              # Monorepo Root
 
 ### Prerequisites
 
-* [Go 1.21+]()
-* [Docker]() (for Redis)
+* [Go 1.21+](https://go.dev/)
+* [Docker](https://www.docker.com/) (for Redis)
 
 ### 1. Start Infrastructure
 
-Spin up the Redis instance using Docker Compose:
+Spin up the Redis instance:
 
 ```powershell
 docker-compose up -d
 
 ```
 
-### 2. Build the Gateway
+### 2. Configuration
 
-Compile the Go application (ensure you are in the `gateway` directory or point to it):
+Ensure `gateway/config.yaml` exists. Example:
+
+```yaml
+server:
+  port: 8080
+redis:
+  addr: "localhost:6379"
+  password: ""
+  failure_mode: "open" # Options: "open" or "closed"
+services:
+  - name: "gpt4-service"
+    path: "/api/v1/gpt4"
+    target_url: "http://localhost:5001"
+    rate_limit:
+      global_rate: 1000
+      global_capacity: 1000
+      # ... other limits
+
+```
+
+### 3. Build & Run
 
 ```powershell
 # From project root
 go build -o gateway/api-gateway.exe gateway/cmd/server/main.go
-
-```
-
-### 3. Run the Server
-
-Start the gateway (uses default configuration):
-
-```powershell
 ./gateway/api-gateway.exe
 
 ```
 
-## 🧪 Testing
+## 🧪 Automated Testing
 
-We include a comprehensive **One-Shot Test Suite** (`test_suite.ps1`) that:
+We provide a professional-grade **Test Suite** (`test_suite.ps1`) that performs integration testing with **Environment Variable Injection** and **Log Isolation**.
 
-1. Compiles the latest code.
-2. Automatically manages the server process (starts/stops).
-3. Injects different Environment Variables to test specific scenarios.
-4. Verifies **User Quotas**, **IP Limits**, and **Global Circuit Breaking**.
+### Usage
 
-**Run the test suite:**
+**Run All Tests (Recommended):**
 
 ```powershell
-./test_suite.ps1
+./test_suite.ps1 -Scenario All
 
 ```
 
-You should see green **PASS** indicators for all scenarios.
+**Run Specific Scenarios:**
 
-## 📝 Configuration
+```powershell
+./test_suite.ps1 -Scenario FailClosed
+./test_suite.ps1 -Scenario UserLimit
 
-You can override the default rate limits by setting these Environment Variables before running the server:
+```
 
-| Variable | Description | Default |
+### What it tests:
+
+1. **User/IP/Global Limits**: Verifies precise blocking at specific thresholds.
+2. **Header Verification**: Checks `X-RateLimit-Type` to ensure the *correct* rule triggered the block.
+3. **Resilience**: Kills the Redis container to verify **Fail-Open** and **Fail-Closed** behavior.
+4. **Routing**: Confirms traffic reaches the correct downstream service.
+
+## 📝 Configuration & Overrides
+
+The Gateway uses a hybrid configuration model. `config.yaml` is the default, but you can override settings via Environment Variables (useful for CI/CD or Testing).
+
+| Feature | YAML Key | Env Variable Override |
 | --- | --- | --- |
-| `LIMIT_GLOBAL_RATE` | Tokens added per second (System-wide) | `1000` |
-| `LIMIT_GLOBAL_CAP` | Max burst capacity (System-wide) | `1000` |
-| `LIMIT_IP_RATE` | Tokens added per second (Per IP) | `100` |
-| `LIMIT_IP_CAP` | Max burst capacity (Per IP) | `100` |
-| `LIMIT_USER_RATE` | Tokens added per second (Per API Key) | `10` |
-| `LIMIT_USER_CAP` | Max burst capacity (Per API Key) | `10` |
+| **Failure Mode** | `redis.failure_mode` | `REDIS_FAILURE_MODE` |
+| **Global Cap** | `services[].rate_limit.global_capacity` | `LIMIT_GLOBAL_CAP` |
+| **IP Rate** | `services[].rate_limit.ip_rate` | `LIMIT_IP_RATE` |
+| **User Cap** | `services[].rate_limit.user_capacity` | `LIMIT_USER_CAP` |
 
 ## 🗺️ Roadmap
 
-* [x] Phase 1: Basic Go HTTP Server
-* [x] Phase 2: Redis Integration & Lua Scripting
-* [x] Phase 3: 3-Layer Rate Limiting & Automated Testing
-* [ ] **Phase 4 (Next): Reverse Proxy to Real AI Models**
-* [ ] Phase 5: YAML Configuration & Service Discovery
-* [ ] Phase 6: Dockerization of the Gateway itself
+* [x] **Phase 1**: Basic HTTP Server & Proxy
+* [x] **Phase 2**: Redis Integration & Lua Atomic Counters
+* [x] **Phase 3**: 3-Layer Rate Limiting logic
+* [x] **Phase 4**: Reverse Proxy & Multi-Service Routing
+* [x] **Phase 5**: YAML Config, Resilience (Fail-Open/Closed), & Advanced Testing
+* [ ] **Phase 6 (Current)**: **Response Modifier & Token Counting** (Intercepting JSON streams)
+* [ ] **Phase 7**: Real Backend Integration & Dockerizing the Gateway
 
 ## 📄 License
 
