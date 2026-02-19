@@ -19,7 +19,7 @@ import (
 	"go-rate-limiter/internal/server"
 )
 
-// 輔助函式：優先讀取環境變數，若無則回傳 YAML 的數值
+// Helper: Prioritize environment variable, fallback to YAML value if not set
 func envOrYaml(envKey string, yamlVal float64) float64 {
 	if val, exists := os.LookupEnv(envKey); exists {
 		if f, err := strconv.ParseFloat(val, 64); err == nil {
@@ -32,9 +32,10 @@ func envOrYaml(envKey string, yamlVal float64) float64 {
 func main() {
 	cfg, err := config.LoadConfig("config.yaml")
 	if err != nil {
-		log.Fatalf("❌ 無法載入設定檔: %v", err)
+		log.Fatalf("❌ Failed to load config: %v", err)
 	}
 
+	// 1. Initialize Redis Client
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     cfg.Redis.Addr,
 		Password: cfg.Redis.Password,
@@ -43,28 +44,43 @@ func main() {
 
 	ctx := context.Background()
 	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Printf("⚠️ Redis 未啟動或連線失敗")
+		log.Printf("⚠️ Redis not reachable (handling via FailureMode)")
 	}
 
-	// 這裡讀取環境變數 REDIS_FAILURE_MODE 以支援測試腳本切換 Fail-Open/Closed
+	// 2. Set Failure Mode (Support Env Override)
 	failureMode := cfg.Redis.FailureMode
 	if envMode, exists := os.LookupEnv("REDIS_FAILURE_MODE"); exists {
 		failureMode = envMode
 	}
 
-	// 初始化時帶入最終決定的 failureMode (open 或 closed)
+	// 3. Initialize Limiters
+	// Distributed (Redis)
 	redisLimiter := limiter.NewRedisLimiter(rdb, failureMode)
 
+	// Local (Memory) - Start local limiter manager
+	localLimiter := limiter.NewLimiterManager()
+
+	// 4. Setup Router
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("OK"))
 	})
 
 	for _, svc := range cfg.Services {
-		s := svc
+		s := svc // Capture loop variable
 		targetURL, _ := url.Parse(s.TargetURL)
+
+		// Create Reverse Proxy
 		proxy := httputil.NewSingleHostReverseProxy(targetURL)
 
+		// Optimization: Ensure Host Header is correct for forwarding
+		originalDirector := proxy.Director
+		proxy.Director = func(req *http.Request) {
+			originalDirector(req)
+			req.Host = targetURL.Host
+		}
+
+		// Configure Rate Limits (Env Override)
 		limitCfg := server.RateLimitConfig{
 			GlobalRate:     envOrYaml("LIMIT_GLOBAL_RATE", s.RateLimit.GlobalRate),
 			GlobalCapacity: envOrYaml("LIMIT_GLOBAL_CAP", s.RateLimit.GlobalCapacity),
@@ -74,28 +90,28 @@ func main() {
 			UserCapacity:   envOrYaml("LIMIT_USER_CAP", s.RateLimit.UserCapacity),
 		}
 
-		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			r.Host = targetURL.Host
-			proxy.ServeHTTP(w, r)
-		})
+		// ✨ Chain Middleware
+		// Flow: Request -> Middleware (Local -> Redis) -> Proxy -> Backend
+		handler := server.RateLimitMiddleware(localLimiter, redisLimiter, limitCfg, s.Name, proxy)
 
-		// ✨ 關鍵修改點：傳入 s.Name 作為第三個參數
-		// 這樣 middleware.go 才能建立 "global:gpt4-service" 這種獨立的 Key
-		mux.Handle(s.Path, server.RateLimitMiddleware(redisLimiter, limitCfg, s.Name, handler))
+		// Register Route
+		mux.Handle(s.Path, handler)
 
-		log.Printf("🚀 路由就緒: %s -> %s (Name: %s)", s.Path, s.TargetURL, s.Name)
+		log.Printf("🚀 Route ready: %s -> %s (Service: %s)", s.Path, s.TargetURL, s.Name)
 	}
 
+	// 5. Start Server
 	addr := ":" + strconv.Itoa(cfg.Server.Port)
 	srv := &http.Server{Addr: addr, Handler: mux}
 
 	go func() {
-		log.Printf("🌐 AI Gateway 啟動於 %s", addr)
+		log.Printf("🌐 AI Gateway started at %s", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server 啟動失敗: %v", err)
+			log.Fatalf("❌ Server startup failed: %v", err)
 		}
 	}()
 
+	// 6. Graceful Shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
@@ -104,5 +120,5 @@ func main() {
 	ctxShutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	srv.Shutdown(ctxShutdown)
-	log.Println("✅ 伺服器已退出")
+	log.Println("✅ Server exited successfully")
 }
