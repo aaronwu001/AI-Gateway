@@ -34,7 +34,6 @@ func (r *RedisLimiter) AllowN(ctx context.Context, key string, rate, capacity fl
 
 	allowed, err := cmd.Bool()
 	if err != nil {
-		// Log 改為純英文
 		log.Printf("[REDIS ERROR] Eval failed: %v", err)
 
 		if r.failureMode == "closed" {

@@ -18,23 +18,23 @@ type RateLimitConfig struct {
 	UserCapacity   float64
 }
 
-// RateLimitMiddleware 整合了 Local (記憶體) 與 Redis (分散式) 的雙層限流
+// RateLimitMiddleware combines a two-layer rate limit using Local (in-memory) and Redis (distributed) checks.
 func RateLimitMiddleware(localLimiter *limiter.LimiterManager, redisLimiter *limiter.RedisLimiter, config RateLimitConfig, serviceName string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
 		// ---------------------------------------------------------
-		// 1. 準備資料 (IP & API Key)
+		// 1. Prepare data (IP & API key)
 		// ---------------------------------------------------------
 		ip := extractIP(r)
 		apiKey := r.Header.Get("X-API-Key")
 
 		// ---------------------------------------------------------
-		// 2. 第一道防線：Local Limiter (記憶體檢查，速度最快)
+		// 2. First layer: Local limiter (in-memory check, fastest)
 		// ---------------------------------------------------------
 
 		// 2.1 Local IP Check
-		// 使用相同的 Rate/Capacity 配置，或者你可以給 Local 稍微寬鬆一點的值
+		// Use the same rate/capacity config, or set slightly looser values for Local.
 		if !localLimiter.Allow("ip:"+ip, config.IPRate, config.IPCapacity) {
 			w.Header().Set("X-RateLimit-Type", "Local-IP")
 			log.Printf("[LIMIT] Local IP limit exceeded: %s", ip)
@@ -42,7 +42,7 @@ func RateLimitMiddleware(localLimiter *limiter.LimiterManager, redisLimiter *lim
 			return
 		}
 
-		// 2.2 Local User Check (如果有 API Key 才檢查)
+		// 2.2 Local User Check (only when an API key is present)
 		if apiKey != "" {
 			if !localLimiter.Allow("user:"+apiKey, config.UserRate, config.UserCapacity) {
 				w.Header().Set("X-RateLimit-Type", "Local-User")
@@ -53,7 +53,7 @@ func RateLimitMiddleware(localLimiter *limiter.LimiterManager, redisLimiter *lim
 		}
 
 		// ---------------------------------------------------------
-		// 3. 第二道防線：Redis Limiter (分散式檢查，準確度最高)
+		// 3. Second layer: Redis limiter (distributed check, highest accuracy)
 		// ---------------------------------------------------------
 
 		// 3.1 Global Limit (Redis)
@@ -109,7 +109,7 @@ func RateLimitMiddleware(localLimiter *limiter.LimiterManager, redisLimiter *lim
 		}
 
 		// ---------------------------------------------------------
-		// 4. 全部通過，放行
+		// 4. All checks passed, allow request
 		// ---------------------------------------------------------
 		next.ServeHTTP(w, r)
 	})

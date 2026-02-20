@@ -5,7 +5,7 @@ server:
 redis:
   addr: "localhost:6379"
   password: ""
-  failure_mode: "open" # 故障時放行
+  failure_mode: "open" # Allow requests when a failure occurs
 
 services:
   - name: "gpt4-service"
@@ -16,12 +16,12 @@ services:
       global_capacity: 1000.0
       ip_rate: 100.0
       ip_capacity: 100.0
-      user_rate: 0.0      # 測試用，設為 0 禁止回血
-      user_capacity: 3.0  # 測試用，容量 3
+      user_rate: 0.0      # Test setting: 0 disables token refill
+      user_capacity: 3.0  # Test setting: capacity is 3
 
   - name: "vision-service"
     path: "/api/v1/vision"
-    target_url: "http://localhost:5001" # 目前先指向同一個 mock backend
+    target_url: "http://localhost:5001" # Currently points to the same mock backend
     rate_limit:
       global_rate: 1000.0
       global_capacity: 1000.0

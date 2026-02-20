@@ -90,7 +90,6 @@ func main() {
 			UserCapacity:   envOrYaml("LIMIT_USER_CAP", s.RateLimit.UserCapacity),
 		}
 
-		// ✨ Chain Middleware
 		// Flow: Request -> Middleware (Local -> Redis) -> Proxy -> Backend
 		handler := server.RateLimitMiddleware(localLimiter, redisLimiter, limitCfg, s.Name, proxy)
 

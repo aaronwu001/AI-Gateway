@@ -1,17 +1,17 @@
-# 使用輕量級 Python 映像檔
+# Use a lightweight Python image
 FROM python:3.9-slim
 
 WORKDIR /app
 
-# 安裝依賴
+# Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 複製程式碼
+# Copy source code
 COPY . .
 
-# 暴露 Port (與 main.py 一致)
+# Expose port (matches main.py)
 EXPOSE 5001
 
-# 啟動命令
+# Startup command
 CMD ["python", "main.py"]

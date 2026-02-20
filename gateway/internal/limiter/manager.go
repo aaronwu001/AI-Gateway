@@ -4,7 +4,7 @@ import (
 	"sync"
 )
 
-// LimiterManager 管理多個 TokenBucket (例如針對不同 IP 或 API Key)
+// LimiterManager manages multiple TokenBuckets (e.g., for different IPs or API keys).
 type LimiterManager struct {
 	buckets map[string]*TokenBucket
 	mu      sync.RWMutex
@@ -14,13 +14,14 @@ func NewLimiterManager() *LimiterManager {
 	lm := &LimiterManager{
 		buckets: make(map[string]*TokenBucket),
 	}
-	// 啟動一個背景協程，每分鐘清理一次過期的桶子 (這裡簡化處理，暫不實作複雜的 TTL)
+	// Start a background goroutine to clean expired buckets every minute
+	// (simplified here; complex TTL handling is not implemented yet).
 	return lm
 }
 
-// GetLimiter 獲取或創建一個指定 key 的限流器
+// GetLimiter gets or creates a limiter for the specified key.
 func (lm *LimiterManager) GetLimiter(key string, rate, capacity float64) *TokenBucket {
-	// 1. 快速讀取鎖 (Read Lock)
+	// 1. Fast read lock.
 	lm.mu.RLock()
 	bucket, exists := lm.buckets[key]
 	lm.mu.RUnlock()
@@ -29,22 +30,22 @@ func (lm *LimiterManager) GetLimiter(key string, rate, capacity float64) *TokenB
 		return bucket
 	}
 
-	// 2. 寫入鎖 (Write Lock)
+	// 2. Write lock.
 	lm.mu.Lock()
 	defer lm.mu.Unlock()
 
-	// 再次檢查 (Double Check Locking)，防止在鎖切換瞬間被建立
+	// Double-check to prevent duplicate creation during lock switch.
 	if bucket, exists = lm.buckets[key]; exists {
 		return bucket
 	}
 
-	// 創建新的
+	// Create a new bucket.
 	newBucket := NewTokenBucket(rate, capacity)
 	lm.buckets[key] = newBucket
 	return newBucket
 }
 
-// Allow 直接檢查某個 Key 是否通過
+// Allow checks whether the given key is allowed.
 func (lm *LimiterManager) Allow(key string, rate, capacity float64) bool {
 	bucket := lm.GetLimiter(key, rate, capacity)
 	return bucket.Allow()
